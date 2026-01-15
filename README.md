@@ -126,183 +126,89 @@ Configuration in `config/settings.py`:
 
 ```
 server/
-├── config/              # Configur   # ArcFace recognition engine
-│   ├── mobilefacenet_recognizer.py   # MobileFaceNetsettings
+├── config/              # Configuration settings
 ├── models/              # Data models and persistence
 ├── services/            # Business logic services
-│   ├── arcface_recognizer.py      # Face recognition engine
-│   ├── face_detector.py           # MTCNN face detection
-│   ├── face_recognition_service.py # Service layer
-│   └── image_processor.py         # Image enhancement
+│   ├── arcface_recognizer.py           # ArcFace recognition engine
+│   ├── mobilefacenet_recognizer.py     # MobileFaceNet recognition engine
+│   ├── face_detector.py                # MTCNN face detection
+│   ├── face_recognition_service.py     # Service layer
+│   └── image_processor.py              # Image enhancement
 ├── routes/              # API endpoints
 ├── utils/               # Utility functions
 ├── cleanup.py           # Maintenance script
 └── server.py            # Application entry point
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [OPTIMIZATION.md](OPTIMIZATION.md) for details.
---output, -o OUTPUT Output base directory (default: output)
---batch-size, -b SIZE Batch size for processing (default: 32)
---no-darkening Skip darkening stage
---no-classical Skip classical enhancement
---no-deep Skip deep learning enhancement
---no-detection Skip face detection
---max-display NUM Maximum images to save visualizations for (default: 5)
+## Dependencies
 
-````
+- **Flask**: Web framework
+- **InsightFace**: Face recognition models (ArcFace, MobileFaceNet)
+- **OpenCV**: Image processing
+- **MTCNN**: Face detection
+- **PyTorch**: Zero-DCE deep learning enhancement
+- **NumPy**: Numerical operations
 
-### Examples
+## Model Information
 
-**Full Pipeline (All Stages)**
+### ArcFace (buffalo_l)
 
-```bash
-python image_processing_pipeline.py --input ./images --output ./results
-````
+- **Accuracy**: State-of-the-art
+- **Embedding Size**: 512 dimensions
+- **Default Threshold**: 0.4
+- **Use Case**: Production environments requiring high accuracy
 
-**Only Darkening and Detection (Skip Enhancement)**
+### MobileFaceNet (antelopev2)
 
-```bash
-python image_processing_pipeline.py --input ./images --no-classical --no-deep
-```
-
-**Custom Batch Size for GPU Processing**
-
-```bash
-python image_processing_pipeline.py --input ./images --batch-size 64
-```
-
-**Only Face Detection (Assuming Images Already Preprocessed)**
-
-```bash
-python image_processing_pipeline.py --input ./preprocessed --no-darkening --no-classical --no-deep
-```
-
-## Pipeline Stages
-
-### Stage 1: Image Darkening
-
-- Creates two versions of each image: 50% and 80% darkened
-- Files saved with `_50_darkened` and `_80_darkened` suffixes
-- Includes noise simulation for realistic low-light conditions
-
-### Stage 2A: Classical Enhancement
-
-- Applies CLAHE (Contrast Limited Adaptive Histogram Equalization)
-- Gamma correction for brightness adjustment
-- Color-preserving denoising
-- Files saved with `_classical` suffix
-
-### Stage 2B: Deep Learning Enhancement
-
-- Uses Zero-DCE neural network
-- Trained specifically for low-light enhancement
-- GPU acceleration if available
-- Files saved with `_deep` suffix
-
-### Stage 3: Face Detection
-
-- MTCNN face detection with bounding boxes
-- 5-point facial landmark detection:
-  - **Blue**: Left Eye
-  - **Yellow**: Right Eye
-  - **Red**: Nose
-  - **Cyan**: Left Mouth Corner
-  - **Magenta**: Right Mouth Corner
-- Confidence scores displayed
-- Results saved with `detected_` prefix
-
-## Output Structure
-
-```
-output/
-├── logs/
-│   └── pipeline_YYYYMMDD_HHMMSS.log
-├── preprocessed/
-│   ├── image1_50_darkened.jpg
-│   ├── image1_50_darkened_classical.jpg
-│   ├── image1_50_darkened_deep.jpg
-│   ├── image1_80_darkened.jpg
-│   ├── image1_80_darkened_classical.jpg
-│   └── image1_80_darkened_deep.jpg
-└── results/
-    ├── detected_image1_50_darkened.jpg
-    ├── detected_image1_50_darkened_classical.jpg
-    └── ...
-```
-
-## Performance Tips
-
-1. **Batch Size**: Increase `--batch-size` if you have more RAM/VRAM (default: 32)
-2. **GPU Acceleration**: Ensure CUDA is installed for PyTorch to use GPU for deep learning enhancement
-3. **Skip Unnecessary Stages**: Use `--no-*` flags to disable stages you don't need
-4. **Parallel Processing**: The script already uses batch processing internally for efficiency
-
-## System Requirements
-
-- **Python**: 3.8 or higher
-- **RAM**: Minimum 8GB (16GB recommended for large batches)
-- **GPU**: Optional, but recommended for deep learning enhancement
-- **Disk Space**: Ensure sufficient space (processed images can be 4-6x input size)
+- **Accuracy**: Good (lightweight)
+- **Embedding Size**: 128 dimensions
+- **Default Threshold**: 0.70
+- **Use Case**: Mobile/edge devices, real-time applications
 
 ## Troubleshooting
 
-### Issue: "No images found"
+### Face Recognition Issues
 
-- Check that your input folder contains .jpg, .jpeg, or .png files
-- Verify the path is correct
+**No faces detected:**
 
-### Issue: "Zero-DCE model not found"
+- Ensure image has clear, frontal faces
+- Check image quality and lighting
+- Minimum face size requirements apply
 
-- The pipeline will automatically skip deep learning enhancement
-- To enable it, clone the Zero-DCE repository as shown in installation
+**Low confidence scores:**
 
-### Issue: Out of memory errors
+- Try adjusting the threshold parameter
+- Re-enroll with multiple images of the same person
+- Ensure consistent lighting conditions
 
-- Reduce `--batch-size` to a smaller number (e.g., 16 or 8)
-- Close other applications using RAM/VRAM
+**Model not available:**
 
-### Issue: Slow processing
+- Check InsightFace installation: `pip install insightface`
+- Verify model downloads completed (first run downloads models)
 
-- Increase batch size if you have available memory
-- Consider using GPU for deep learning stage
-- Skip stages you don't need with `--no-*` flags
+### Server Issues
+
+**Port already in use:**
+
+```bash
+python server.py --port 8000
+```
+
+**Out of memory:**
+
+- Reduce batch processing size
+- Use MobileFaceNet instead of ArcFace
+- Close unnecessary applications
 
 ## Logging
 
-All processing logs are saved to:
+Server logs saved to `server.log` with:
 
-```
-output/logs/pipeline_YYYYMMDD_HHMMSS.log
-```
-
-Logs include:
-
-- Processing progress for each stage
-- Error messages and warnings
-- Performance statistics
-- Final summary with total execution time
+- Request tracking with unique IDs
+- Error messages and stack traces
+- Model initialization status
+- Recognition results and timing
 
 ## License
 
-This pipeline combines multiple open-source components. Please refer to individual component licenses:
-
-- MTCNN: [MIT License](https://github.com/ipazc/mtcnn)
-- Zero-DCE: [CC BY-NC-SA 4.0](https://github.com/Li-Chongyi/Zero-DCE)
-- OpenCV: [Apache 2.0](https://opencv.org/license/)
-
-## Citation
-
-If you use this pipeline in your research, please cite the relevant papers:
-
-```bibtex
-@inproceedings{zero-dce,
-  title={Zero-Reference Deep Curve Estimation for Low-Light Image Enhancement},
-  author={Guo, Chunle and Li, Chongyi and Guo, Jichang and Loy, Chen Change and Hou, Junhui and Kwong, Sam and Cong, Runmin},
-  booktitle={CVPR},
-  year={2020}
-}
-```
-
-#   t a n g l a w - b a c k e n d 
- 
- 
+MIT License - See LICENSE file for details
