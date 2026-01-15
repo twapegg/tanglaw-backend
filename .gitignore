@@ -48,6 +48,17 @@ Zero-DCE/
 *.h5
 *.ckpt
 
+# Face databases
+database/mobilefacenet/*.pkl
+database/*.pkl
+database/*.json
+
+# Temporary uploads and outputs
+temp_uploads/*
+temp_outputs/*
+!temp_uploads/.gitkeep
+!temp_outputs/.gitkeep
+
 # Logs
 *.log
 logs/
