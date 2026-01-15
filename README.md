@@ -119,7 +119,7 @@ server/
 ├── services/            # Business logic services
 │   ├── arcface_recognizer.py           # ArcFace recognition engine
 │   ├── mobilefacenet_recognizer.py     # MobileFaceNet recognition engine
-│   ├── face_detector.py                # MTCNN face detection
+│   ├── mtcnn_detector.py               # MTCNN face detection
 │   ├── face_recognition_service.py     # Service layer
 │   └── image_processor.py              # Image enhancement
 ├── routes/              # API endpoints

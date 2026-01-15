@@ -1,6 +1,6 @@
 """Services module."""
 from .image_processor import darken_image, enhance_classical, enhance_deep
-from .face_detector import detect_faces
+from .mtcnn_detector import detect_faces
 from .face_recognition_service import face_recognition_service
 
 # Try to import recognizers (optional)

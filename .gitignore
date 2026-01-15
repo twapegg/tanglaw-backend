@@ -49,10 +49,7 @@ Zero-DCE/
 *.ckpt
 
 # Face databases
-database/arcface/*.pkl
-database/mobilefacenet/*.pkl
-database/*.pkl
-database/*.json
+database/*
 
 # Temporary uploads and outputs
 temp_uploads/*
