@@ -7,6 +7,16 @@ import logging
 from pathlib import Path
 from typing import List, Tuple
 
+CONDITION_DIRS = {
+    "50_enhanced_classic",
+    "50_enhanced_deep",
+    "80_enhanced_classic",
+    "80_enhanced_deep",
+    "50_darkened",
+    "80_darkened",
+}
+BASELINE_CONDITION = "baseline"
+
 try:
     from insightface.app import FaceAnalysis
     INSIGHTFACE_AVAILABLE = True
@@ -48,7 +58,7 @@ class MobileFaceNetRecognizer:
         self._load_database()
         logging.info(f"Loaded {len(self.known_faces)} faces from database")
     
-    def add_face(self, image_path: str, name: str) -> bool:
+    def add_face(self, image_path: str, name: str, condition: str = None) -> bool:
         logging.info(f"Adding face: {name}")
         
         img = cv2.imread(image_path)
@@ -60,17 +70,19 @@ class MobileFaceNetRecognizer:
             raise ValueError("No face detected")
         
         if len(faces) > 1:
-            logging.warning("Multiple faces detected, using largest")
+            raise ValueError("Multiple faces detected; please provide an image with exactly one face.")
         
         face = max(faces, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
-        embedding = face.embedding
-        
-        if name not in self.known_faces:
-            self.known_faces[name] = []
-        
-        self.known_faces[name].append(embedding)
+        embedding = self._normalize_embedding(face.embedding)
+        resolved_condition = condition or self._infer_condition(image_path)
+        self._ensure_entry(name)
+        if resolved_condition not in self.known_faces[name]:
+            self.known_faces[name][resolved_condition] = []
+        self.known_faces[name][resolved_condition].append(embedding.tolist())
         self._save_database()
-        logging.info(f"Added {name} (total: {len(self.known_faces[name])} embeddings)")
+        logging.info(
+            f"Added {name} [{resolved_condition}] (total: {len(self.known_faces[name][resolved_condition])} embeddings)"
+        )
         return True
     
     def recognize_face(self, image_path: str, threshold: float = 0.6) -> List[Tuple[str, float, List[int]]]:
@@ -92,12 +104,14 @@ class MobileFaceNetRecognizer:
             best_match = "Unknown"
             best_similarity = 0.0
             
-            for name, embeddings in self.known_faces.items():
-                if not isinstance(embeddings, list):
-                    embeddings = [embeddings]
-                
-                for known_embedding in embeddings:
-                    similarity = self._compute_similarity(embedding, known_embedding)
+            embedding = self._normalize_embedding(embedding)
+            for name, entry in self.known_faces.items():
+                condition_groups = self._get_condition_groups(entry)
+                for condition, embeddings in condition_groups.items():
+                    template = self._compute_template(embeddings)
+                    if template is None:
+                        continue
+                    similarity = self._compute_similarity(embedding, template)
                     if similarity > best_similarity:
                         best_similarity = similarity
                         best_match = name
@@ -112,12 +126,145 @@ class MobileFaceNetRecognizer:
             results.append((best_match, confidence, bbox))
         
         return results
+
+    def verify_face(self, image_path: str, name: str, threshold: float = 0.6):
+        if name not in self.known_faces:
+            return {
+                "success": False,
+                "error": f"Face '{name}' not found in database",
+                "status_code": 404
+            }
+
+        img = cv2.imread(image_path)
+        if img is None:
+            raise ValueError(f"Could not read image: {image_path}")
+
+        faces = self.app.get(img)
+        if len(faces) == 0:
+            return {
+                "success": True,
+                "found": False,
+                "verified": False,
+                "metric": "cosine_similarity",
+                "threshold": threshold,
+                "count": 0,
+                "faces": [],
+                "best": None
+            }
+        if len(faces) > 1:
+            return {
+                "success": False,
+                "error": "Multiple faces detected; please provide an image with exactly one face.",
+                "status_code": 400
+            }
+
+        condition_groups = self._get_condition_groups(self.known_faces[name])
+        templates = []
+        for condition, embeddings in condition_groups.items():
+            template = self._compute_template(embeddings)
+            if template is not None:
+                templates.append((condition, template))
+
+        if not templates:
+            return {
+                "success": False,
+                "error": f"No embeddings found for '{name}'",
+                "status_code": 404
+            }
+
+        results = []
+        best_face = None
+        best_similarity = -1.0
+
+        for face in faces:
+            embedding = self._normalize_embedding(face.embedding)
+            bbox = face.bbox.astype(int).tolist()
+
+            face_best_similarity = -1.0
+            best_condition = None
+            for condition, template in templates:
+                similarity = self._compute_similarity(embedding, template)
+                if similarity > face_best_similarity:
+                    face_best_similarity = similarity
+                    best_condition = condition
+
+            is_match = face_best_similarity >= threshold
+
+            face_result = {
+                "bbox": bbox,
+                "similarity": float(face_best_similarity),
+                "match": is_match,
+                "condition": best_condition
+            }
+            results.append(face_result)
+
+            if face_best_similarity > best_similarity:
+                best_similarity = face_best_similarity
+                best_face = face_result
+
+        return {
+            "success": True,
+            "found": True,
+            "verified": bool(best_face and best_face["match"]),
+            "metric": "cosine_similarity",
+            "threshold": threshold,
+            "count": len(results),
+            "faces": results,
+            "best": best_face
+        }
     
     def _compute_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
-        emb1_norm = embedding1 / (np.linalg.norm(embedding1) + 1e-8)
-        emb2_norm = embedding2 / (np.linalg.norm(embedding2) + 1e-8)
+        emb1_norm = self._normalize_embedding(embedding1)
+        emb2_norm = self._normalize_embedding(embedding2)
         similarity = np.dot(emb1_norm, emb2_norm)
         return float(np.clip(similarity, 0.0, 1.0))
+
+    def _normalize_embedding(self, embedding: np.ndarray) -> np.ndarray:
+        if not isinstance(embedding, np.ndarray):
+            embedding = np.array(embedding, dtype=np.float32)
+        embedding = embedding.flatten()
+        norm = np.linalg.norm(embedding)
+        if norm == 0:
+            return embedding
+        return embedding / norm
+
+    def _compute_template(self, embeddings: list) -> np.ndarray:
+        if not embeddings:
+            return None
+        normalized = [self._normalize_embedding(e) for e in embeddings]
+        mean = np.mean(normalized, axis=0)
+        return self._normalize_embedding(mean)
+
+    def _infer_condition(self, image_path: str) -> str:
+        try:
+            parts = Path(image_path).parts
+        except Exception:
+            parts = []
+        for part in parts:
+            if part in CONDITION_DIRS:
+                return part
+        return BASELINE_CONDITION
+
+    def _ensure_entry(self, name: str) -> None:
+        if name not in self.known_faces:
+            self.known_faces[name] = {}
+            return
+        entry = self.known_faces[name]
+        if isinstance(entry, dict):
+            return
+        self.known_faces[name] = {BASELINE_CONDITION: self._to_list(entry)}
+
+    def _get_condition_groups(self, entry):
+        if isinstance(entry, dict):
+            return entry
+        return {BASELINE_CONDITION: self._to_list(entry)}
+
+    def _to_list(self, entry):
+        if isinstance(entry, np.ndarray):
+            return [entry.tolist()]
+        if isinstance(entry, list):
+            return entry
+        return []
     
     def _save_database(self):
         db_file = self.database_path / 'face_database.pkl'

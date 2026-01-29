@@ -5,6 +5,7 @@ import uuid
 import logging
 import zipfile
 import shutil
+from datetime import datetime
 from flask import Blueprint, jsonify, request, send_file
 
 from config import UPLOAD_FOLDER, OUTPUT_FOLDER, ALLOWED_EXTENSIONS
@@ -146,8 +147,9 @@ def index():
             "/process_image": "POST - Process an image through the pipeline",
             "/process_image_files": "POST - Process and return images as ZIP file",
             "/recognition/health": "GET - Face recognition service health",
-            "/recognition/enroll": "POST - Enroll a new face",
+            "/recognition/enroll": "POST - Enroll face image(s)",
             "/recognition/recognize": "POST - Recognize faces in an image",
+            "/recognition/verify": "POST - Verify a claimed identity (1:1)",
             "/recognition/list": "GET - List all enrolled faces",
             "/recognition/remove/<name>": "DELETE - Remove a face from database",
             "/recognition/clear": "POST - Clear all faces from database"

@@ -151,7 +151,8 @@ class FaceRecognitionService:
             logging.error(f"Failed to enroll face: {e}")
             return {
                 "success": False,
-                "error": str(e)
+                "error": str(e),
+                "status_code": 400 if isinstance(e, ValueError) else 500
             }
         finally:
             if restore_model and original_model:
@@ -300,6 +301,72 @@ class FaceRecognitionService:
         # Encode image to bytes
         _, buffer = cv2.imencode('.jpg', img)
         return buffer.tobytes()
+
+    def verify_face(
+        self,
+        image_path: str,
+        name: str,
+        threshold: float = 0.4,
+        model_type: Optional[str] = None
+    ) -> Dict:
+        """
+        Verify a claimed identity (1:1).
+
+        Args:
+            image_path: Path to the image file
+            name: Claimed identity to verify
+            threshold: Verification threshold (distance for ArcFace, similarity for MobileFaceNet)
+            model_type: Optional model type to use (if None, uses current model)
+
+        Returns:
+            Dictionary with verification results
+        """
+        if model_type and model_type != self.model_type:
+            original_model = self.model_type
+            if not self.set_model(model_type):
+                return {
+                    "success": False,
+                    "error": f"Model {model_type} not available"
+                }
+            restore_model = True
+        else:
+            restore_model = False
+            original_model = None
+
+        if not self.is_available():
+            return {
+                "success": False,
+                "error": "Face recognition service not available"
+            }
+
+        try:
+            if not hasattr(self.recognizer, "verify_face"):
+                return {
+                    "success": False,
+                    "error": "Verification not supported for current model"
+                }
+
+            result = self.recognizer.verify_face(
+                image_path,
+                name,
+                threshold=threshold
+            )
+
+            if result.get("success"):
+                result["model"] = self.model_type
+                result["name"] = name
+
+            return result
+
+        except Exception as e:
+            logging.error(f"Failed to verify face: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        finally:
+            if restore_model and original_model:
+                self.set_model(original_model)
     
     def list_enrolled_faces(self) -> Dict:
         """
