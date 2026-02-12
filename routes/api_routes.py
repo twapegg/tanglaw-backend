@@ -135,6 +135,68 @@ def process_single_image(image_path):
         return {"success": False, "error": str(e)}
 
 
+def process_darken_only_image(image_path):
+    start_time = time.time()
+
+    try:
+        original = cv2.imread(image_path)
+        if original is None:
+            raise ValueError(f"Could not read image from {image_path}")
+
+        original_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+
+        darkened_50 = darken_image(original_rgb, 50)
+        darkened_50_bgr = cv2.cvtColor(darkened_50, cv2.COLOR_RGB2BGR)
+        darkened_50_detected, darkened_50_faces = detect_faces(darkened_50_bgr)
+
+        darkened_80 = darken_image(original_rgb, 80)
+        darkened_80_bgr = cv2.cvtColor(darkened_80, cv2.COLOR_RGB2BGR)
+        darkened_80_detected, darkened_80_faces = detect_faces(darkened_80_bgr)
+
+        processing_time = time.time() - start_time
+
+        return {
+            "success": True,
+            "processing_time": round(processing_time, 2),
+            "total_images": 4,
+            "images": [
+                {
+                    "type": "50_darkened_raw",
+                    "label": "Darkened (50%) - No Annotation",
+                    "darkening_level": 50,
+                    "annotated": False,
+                    "image": image_to_base64(darkened_50_bgr),
+                },
+                {
+                    "type": "50_darkened_annotated",
+                    "label": "Darkened (50%) - With Annotation",
+                    "darkening_level": 50,
+                    "annotated": True,
+                    "faces_detected": darkened_50_faces,
+                    "image": image_to_base64(darkened_50_detected),
+                },
+                {
+                    "type": "80_darkened_raw",
+                    "label": "Darkened (80%) - No Annotation",
+                    "darkening_level": 80,
+                    "annotated": False,
+                    "image": image_to_base64(darkened_80_bgr),
+                },
+                {
+                    "type": "80_darkened_annotated",
+                    "label": "Darkened (80%) - With Annotation",
+                    "darkening_level": 80,
+                    "annotated": True,
+                    "faces_detected": darkened_80_faces,
+                    "image": image_to_base64(darkened_80_detected),
+                },
+            ],
+        }
+    except Exception as e:
+        logging.error(f"Error processing darken-only image: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @api.route("/")
 def index():
     """Root endpoint with API information."""
@@ -145,11 +207,15 @@ def index():
             "/": "API information",
             "/health": "Health check",
             "/process_image": "POST - Process an image through the pipeline",
+            "/process_darken_only": "POST - Darken 50/80 with and without annotations",
             "/process_image_files": "POST - Process and return images as ZIP file",
             "/recognition/health": "GET - Face recognition service health",
             "/recognition/enroll": "POST - Enroll face image(s)",
             "/recognition/recognize": "POST - Recognize faces in an image",
             "/recognition/verify": "POST - Verify a claimed identity (1:1)",
+            "/recognition/detect": "POST - Detect faces only (no recognition)",
+            "/recognition/video": "POST - Process video and return annotated MP4",
+            "/enhance": "POST - Enhance image (classical, deep)",
             "/recognition/list": "GET - List all enrolled faces",
             "/recognition/remove/<name>": "DELETE - Remove a face from database",
             "/recognition/clear": "POST - Clear all faces from database"
@@ -227,6 +293,50 @@ def process_image():
             logging.error(f"[{request_id}] Processing failed: {result['error']}")
             return jsonify(result), 500
 
+    except Exception as e:
+        logging.error(f"[{request_id}] Unexpected error: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@api.route("/process_darken_only", methods=["POST"])
+def process_darken_only():
+    request_id = str(uuid.uuid4())[:8]
+    logging.info(f"[{request_id}] Darken-only processing request")
+
+    if "image" not in request.files:
+        return jsonify({"success": False, "error": "No image file provided"}), 400
+
+    file = request.files["image"]
+
+    if file.filename == "":
+        return jsonify({"success": False, "error": "No file selected"}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({
+            "success": False,
+            "error": f'File type not allowed. Allowed types: {", ".join(ALLOWED_EXTENSIONS)}'
+        }), 400
+
+    try:
+        filename = get_secure_filename(file.filename, request_id)
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+
+        result = process_darken_only_image(filepath)
+
+        try:
+            os.remove(filepath)
+        except Exception as e:
+            logging.warning(f"Failed to remove temp file: {e}")
+
+        if result["success"]:
+            logging.info(
+                f"[{request_id}] Darken-only processing complete: "
+                f"{result['total_images']} images in {result['processing_time']}s"
+            )
+            return jsonify(result), 200
+        logging.error(f"[{request_id}] Darken-only processing failed: {result['error']}")
+        return jsonify(result), 500
     except Exception as e:
         logging.error(f"[{request_id}] Unexpected error: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500

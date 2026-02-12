@@ -1,12 +1,12 @@
 """Services module."""
 from .image_processor import darken_image, enhance_classical, enhance_deep
-from .mtcnn_detector import detect_faces
+from .mtcnn_detector import detect_faces, is_detector_available
 from .face_recognition_service import face_recognition_service
 
 # Try to import recognizers (optional)
 _exports = [
-    'darken_image', 'enhance_classical', 'enhance_deep', 
-    'detect_faces', 'face_recognition_service'
+    'darken_image', 'enhance_classical', 'enhance_deep',
+    'detect_faces', 'is_detector_available', 'face_recognition_service'
 ]
 
 try:
