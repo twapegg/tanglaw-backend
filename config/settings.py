@@ -15,17 +15,21 @@ MAX_CONTENT_LENGTH = 256 * 1024 * 1024  # 256MB (increase for video uploads)
 ZERO_DCE_BASE_PATH = os.path.join(os.getcwd(), "Zero-DCE", "Zero-DCE_code")
 ZERO_DCE_MODEL_PATH = os.path.join(ZERO_DCE_BASE_PATH, "snapshots", "Epoch99.pth")
 
+# RetinaFace detector model settings (InsightFace model pack names)
+# Ordered from preferred to fallback.
+RETINAFACE_MODEL_CANDIDATES = ("antelopev2", "buffalo_l")
+
 # Image processing defaults
 DEFAULT_GAMMA = 1.1
 DEFAULT_CURVE = 1.4
 DEFAULT_NOISE_AMOUNT = 0.005
 DEFAULT_BRIGHT_FACTOR = 0.3
 
-# Enhancement settings (gentler classic)
-CLAHE_CLIP_LIMIT = 2.6
+# Enhancement settings (aligned with dataset_prep.ipynb classical config)
+CLAHE_CLIP_LIMIT = 2.0
 CLAHE_TILE_GRID_SIZE = (8, 8)
 ENHANCEMENT_GAMMA = 1.5
-DENOISE_STRENGTH = 6
+DENOISE_STRENGTH = 5
 
 # Post-enhancement boost for deep model output
 DEEP_POST_CLAHE_CLIP_LIMIT = 2.5

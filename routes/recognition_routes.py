@@ -16,6 +16,7 @@ from services import (
     is_detector_available,
 )
 from utils import allowed_file, get_secure_filename, image_to_base64
+from models import model_manager
 
 
 recognition = Blueprint('recognition', __name__, url_prefix='/recognition')
@@ -36,6 +37,98 @@ def add_cors_headers(response):
 @recognition.route('/video', methods=['OPTIONS'])
 def video_options():
     return make_response("", 204)
+
+
+def _parse_optional_darken_level(raw_value):
+    if raw_value is None or str(raw_value).strip() == "":
+        return None
+
+    try:
+        darken_level = int(raw_value)
+    except ValueError:
+        raise ValueError("Invalid darken level")
+
+    if darken_level not in [50, 80]:
+        raise ValueError("Darken level must be 50 or 80")
+
+    return darken_level
+
+
+def _parse_enhancement_type(raw_value):
+    enhancement = (raw_value or "none").strip().lower()
+    if enhancement not in ["none", "classical", "deep"]:
+        raise ValueError("Invalid enhancement type")
+    return enhancement
+
+
+def _apply_image_preprocessing(img, enhancement, darken_level, request_id):
+    processed_img = img
+    effective_enhancement = enhancement
+    enhanced_img = None
+
+    # Keep enhancement path consistent with demo pipeline:
+    # classical -> enhance_classical, deep -> enhance_deep.
+    if enhancement == "classical":
+        processed_img = enhance_classical(processed_img)
+        enhanced_img = processed_img.copy()
+    elif enhancement == "deep":
+        deep_enhanced = enhance_deep(processed_img)
+        if deep_enhanced is None:
+            logging.warning(
+                f"[{request_id}] Deep enhancement unavailable; continuing without enhancement"
+            )
+            effective_enhancement = "none"
+        else:
+            processed_img = deep_enhanced
+            enhanced_img = processed_img.copy()
+
+    if darken_level is not None:
+        processed_rgb = cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB)
+        darkened_rgb = darken_image(processed_rgb, darken_level)
+        processed_img = cv2.cvtColor(darkened_rgb, cv2.COLOR_RGB2BGR)
+
+    return processed_img, effective_enhancement, enhanced_img
+
+
+def _extract_detection_confidences(img, detector_type, request_id):
+    """Best-effort confidence extraction from raw detector outputs."""
+    detector_name = (detector_type or "mtcnn").strip().lower()
+    confidences = []
+
+    try:
+        if detector_name == "mtcnn":
+            if not model_manager.is_mtcnn_available():
+                return []
+            rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            detections = model_manager.detector.detect_faces(rgb_image) or []
+        elif detector_name == "retinaface":
+            # Reuse initialized RetinaFace instance when available.
+            from services.mtcnn_detector import _get_retinaface_detector
+
+            retinaface = _get_retinaface_detector()
+            if retinaface is None:
+                return []
+            detections = retinaface.detect_faces(img) or []
+        else:
+            return []
+
+        for detection in detections:
+            conf = detection.get("confidence")
+            if conf is None:
+                continue
+            try:
+                conf_val = float(conf)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(conf_val):
+                confidences.append(max(0.0, min(1.0, conf_val)))
+
+    except Exception as e:
+        logging.warning(
+            f"[{request_id}] Fallback confidence extraction failed: {e}"
+        )
+
+    return confidences
 
 
 @recognition.route('/health')
@@ -174,6 +267,7 @@ def recognize_face():
     """
     request_id = str(uuid.uuid4())[:8]
     logging.info(f"[{request_id}] Face recognition request")
+    processing_start = time.perf_counter()
     
     # Check if service is available
     if not face_recognition_service.is_available():
@@ -191,6 +285,13 @@ def recognize_face():
         return jsonify({"success": False, "error": "Invalid file"}), 400
     
     model_type = request.form.get('model', None)
+    enhancement_raw = request.form.get('enhancement', 'none')
+    darken_level_raw = request.form.get('darken_level', None)
+    try:
+        darken_level = _parse_optional_darken_level(darken_level_raw)
+        enhancement = _parse_enhancement_type(enhancement_raw)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     current_model = model_type if model_type else face_recognition_service.get_current_model()
     default_threshold = 0.70 if current_model == 'mobilefacenet' else 0.4
     threshold = float(request.form.get('threshold', default_threshold))
@@ -202,36 +303,102 @@ def recognize_face():
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
         
-        logging.info(f"[{request_id}] Recognizing faces (model: {model_type or 'default'})")
+        processing_path = filepath
+        preprocessed_path = None
+        effective_enhancement = enhancement
+        processed_img_for_preview = None
+
+        source_img = cv2.imread(filepath)
+        if source_img is None:
+            return jsonify({"success": False, "error": "Could not read image"}), 400
+
+        if darken_level is not None or enhancement != 'none':
+            (
+                processed_img_for_preview,
+                effective_enhancement,
+                enhanced_img_for_preview,
+            ) = _apply_image_preprocessing(
+                source_img,
+                enhancement,
+                darken_level,
+                request_id,
+            )
+            preprocessed_path = os.path.join(
+                UPLOAD_FOLDER, f"{request_id}_preprocessed.jpg"
+            )
+            cv2.imwrite(preprocessed_path, processed_img_for_preview)
+            processing_path = preprocessed_path
+        else:
+            processed_img_for_preview = source_img
+            enhanced_img_for_preview = None
+
+        logging.info(
+            f"[{request_id}] Recognizing faces (model: {model_type or 'default'}, darken: {darken_level if darken_level is not None else 'none'}, enhancement: {effective_enhancement})"
+        )
         
-        result = face_recognition_service.recognize_face(filepath, threshold=threshold, model_type=model_type)
+        result = face_recognition_service.recognize_face(
+            processing_path,
+            threshold=threshold,
+            model_type=model_type,
+        )
         logging.info(f"[{request_id}] Result: success={result.get('success')}, found={result.get('found')}, count={result.get('count')}")
         
         if result.get("success") and result.get("found") and result.get("faces"):
             try:
                 import base64
-                annotated_bytes = face_recognition_service.draw_annotated_image(filepath, result["faces"])
+                annotated_bytes = face_recognition_service.draw_annotated_image(
+                    processing_path,
+                    result["faces"],
+                )
                 if annotated_bytes:
                     result["annotated_image"] = base64.b64encode(annotated_bytes).decode('utf-8')
                     logging.info(f"[{request_id}] Annotated image generated")
             except Exception as e:
                 logging.error(f"[{request_id}] Annotation failed: {e}", exc_info=True)
                 result["annotation_error"] = str(e)
-        
+        elif result.get("success"):
+            # Still return the preprocessed image so users can inspect enhancement/darken.
+            result["annotated_image"] = image_to_base64(processed_img_for_preview)
+
+        if result.get("success"):
+            result["darken_level"] = darken_level
+            result["enhancement"] = effective_enhancement
+            if enhanced_img_for_preview is not None:
+                result["enhanced_image"] = image_to_base64(enhanced_img_for_preview)
+
         try:
             os.remove(filepath)
         except Exception as e:
             logging.warning(f"Failed to remove temp file: {e}")
+        if preprocessed_path and os.path.exists(preprocessed_path):
+            try:
+                os.remove(preprocessed_path)
+            except Exception as e:
+                logging.warning(f"Failed to remove preprocessed temp file: {e}")
         
         if result["success"]:
             if result.get("found"):
                 logging.info(f"[{request_id}] Found {result.get('count', 0)} face(s)")
             else:
                 logging.info(f"[{request_id}] No faces found")
-            return jsonify(result), 200
+            response = jsonify(result)
+            response.status_code = 200
+            processing_time_sec = time.perf_counter() - processing_start
+            response.headers["X-Processing-Time-Ms"] = str(
+                int(processing_time_sec * 1000)
+            )
+            response.headers["X-Processing-Time-Sec"] = f"{processing_time_sec:.3f}"
+            return response
         else:
             logging.error(f"[{request_id}] Recognition failed: {result.get('error')}")
-            return jsonify(result), 500
+            response = jsonify(result)
+            response.status_code = 500
+            processing_time_sec = time.perf_counter() - processing_start
+            response.headers["X-Processing-Time-Ms"] = str(
+                int(processing_time_sec * 1000)
+            )
+            response.headers["X-Processing-Time-Sec"] = f"{processing_time_sec:.3f}"
+            return response
             
     except Exception as e:
         logging.error(f"[{request_id}] Error: {e}", exc_info=True)
@@ -332,6 +499,7 @@ def verify_face():
 def detect_only():
     request_id = str(uuid.uuid4())[:8]
     logging.info(f"[{request_id}] Face detection request")
+    processing_start = time.perf_counter()
 
     if 'image' not in request.files:
         return jsonify({"success": False, "error": "No image file provided"}), 400
@@ -342,6 +510,13 @@ def detect_only():
         return jsonify({"success": False, "error": "Invalid file"}), 400
 
     detector_type = request.form.get('detector', 'mtcnn').strip().lower()
+    enhancement_raw = request.form.get('enhancement', 'none')
+    darken_level_raw = request.form.get('darken_level', None)
+    try:
+        darken_level = _parse_optional_darken_level(darken_level_raw)
+        enhancement = _parse_enhancement_type(enhancement_raw)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     if detector_type not in ['mtcnn', 'retinaface']:
         return jsonify({"success": False, "error": "Invalid detector. Use 'mtcnn' or 'retinaface'."}), 400
     if not is_detector_available(detector_type):
@@ -359,7 +534,31 @@ def detect_only():
         if img is None:
             return jsonify({"success": False, "error": "Could not read image"}), 400
 
-        detected_img, count = detect_faces(img, detector=detector_type)
+        img, effective_enhancement, enhanced_img_for_preview = _apply_image_preprocessing(
+            img,
+            enhancement,
+            darken_level,
+            request_id,
+        )
+
+        detected_img, count, confidences = detect_faces(
+            img,
+            detector=detector_type,
+            include_confidences=True,
+        )
+        if count > 0 and not confidences:
+            # Fallback for environments where wrapper-level confidences may be dropped.
+            confidences = _extract_detection_confidences(
+                img,
+                detector_type,
+                request_id,
+            )
+        if count > 0 and not confidences:
+            # Keep shape consistent for UI summaries even if detector doesn't expose score.
+            confidences = [0.0] * count
+        avg_confidence = (
+            float(sum(confidences) / len(confidences)) if confidences else None
+        )
         annotated_base64 = image_to_base64(detected_img)
 
         try:
@@ -367,12 +566,28 @@ def detect_only():
         except Exception as e:
             logging.warning(f"Failed to remove temp file: {e}")
 
-        return jsonify({
+        response_payload = {
             "success": True,
             "count": count,
             "detector": detector_type,
+            "darken_level": darken_level,
+            "enhancement": effective_enhancement,
+            "detection_confidences": confidences,
+            "confidence_scores": confidences,
+            "avg_confidence": avg_confidence,
+            "average_confidence": avg_confidence,
             "annotated_image": annotated_base64
-        }), 200
+        }
+        if enhanced_img_for_preview is not None:
+            response_payload["enhanced_image"] = image_to_base64(
+                enhanced_img_for_preview
+            )
+        response = jsonify(response_payload)
+        response.status_code = 200
+        processing_time_sec = time.perf_counter() - processing_start
+        response.headers["X-Processing-Time-Ms"] = str(int(processing_time_sec * 1000))
+        response.headers["X-Processing-Time-Sec"] = f"{processing_time_sec:.3f}"
+        return response
 
     except Exception as e:
         logging.error(f"[{request_id}] Error: {e}", exc_info=True)

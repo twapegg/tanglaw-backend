@@ -342,6 +342,115 @@ def process_darken_only():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@api.route("/darken_batch_zip", methods=["POST"])
+def darken_batch_zip():
+    request_id = str(uuid.uuid4())[:8]
+    logging.info(f"[{request_id}] Darken batch ZIP request")
+
+    files = []
+    if "images" in request.files:
+        files = request.files.getlist("images")
+    elif "image" in request.files:
+        files = [request.files["image"]]
+
+    if not files:
+        return jsonify({"success": False, "error": "No image files provided"}), 400
+
+    darken_level_raw = request.form.get("darken_level", "50")
+    try:
+        darken_level = int(darken_level_raw)
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid darken level"}), 400
+    if darken_level not in [50, 80]:
+        return jsonify({"success": False, "error": "Darken level must be 50 or 80"}), 400
+
+    valid_files = []
+    for file in files:
+        if not file.filename:
+            continue
+        if not allowed_file(file.filename):
+            continue
+        valid_files.append(file)
+
+    if not valid_files:
+        return jsonify({"success": False, "error": "No valid image files provided"}), 400
+
+    tmp_input_dir = os.path.join(UPLOAD_FOLDER, f"{request_id}_darken_input")
+    tmp_output_dir = os.path.join(OUTPUT_FOLDER, f"{request_id}_darken_output")
+    os.makedirs(tmp_input_dir, exist_ok=True)
+    os.makedirs(tmp_output_dir, exist_ok=True)
+
+    written_names = set()
+    processed_count = 0
+
+    try:
+        for index, file in enumerate(valid_files):
+            source_name = os.path.basename(file.filename)
+            safe_name = source_name.replace("\\", "_").replace("/", "_")
+            if not safe_name:
+                safe_name = f"image_{index + 1}.jpg"
+
+            base, ext = os.path.splitext(safe_name)
+            ext = ext if ext else ".jpg"
+            candidate_name = f"{base}{ext}"
+            suffix = 1
+            while candidate_name.lower() in written_names:
+                candidate_name = f"{base}_{suffix}{ext}"
+                suffix += 1
+            written_names.add(candidate_name.lower())
+
+            input_path = os.path.join(tmp_input_dir, f"{index}_{candidate_name}")
+            file.save(input_path)
+
+            original = cv2.imread(input_path)
+            if original is None:
+                logging.warning(
+                    f"[{request_id}] Could not read image, skipping: {file.filename}"
+                )
+                continue
+
+            original_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+            darkened = darken_image(original_rgb, darken_level)
+            darkened_bgr = cv2.cvtColor(darkened, cv2.COLOR_RGB2BGR)
+
+            output_path = os.path.join(tmp_output_dir, candidate_name)
+            cv2.imwrite(output_path, darkened_bgr)
+            processed_count += 1
+
+        if processed_count == 0:
+            return jsonify({"success": False, "error": "No images were processed"}), 400
+
+        zip_path = os.path.join(
+            OUTPUT_FOLDER, f"darkened_{darken_level}_{request_id}.zip"
+        )
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+            for filename in sorted(os.listdir(tmp_output_dir)):
+                file_path = os.path.join(tmp_output_dir, filename)
+                if os.path.isfile(file_path):
+                    zipf.write(file_path, arcname=filename)
+
+        return send_file(
+            zip_path,
+            as_attachment=True,
+            download_name=f"darkened_{darken_level}.zip",
+            mimetype="application/zip",
+        )
+    except Exception as e:
+        logging.error(f"[{request_id}] Error creating darken ZIP: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(tmp_input_dir):
+                shutil.rmtree(tmp_input_dir)
+        except Exception as e:
+            logging.warning(f"[{request_id}] Failed to cleanup input dir: {e}")
+        try:
+            if os.path.exists(tmp_output_dir):
+                shutil.rmtree(tmp_output_dir)
+        except Exception as e:
+            logging.warning(f"[{request_id}] Failed to cleanup output dir: {e}")
+
+
 @api.route("/process_image_files", methods=["POST"])
 def process_image_files():
     """

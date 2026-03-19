@@ -252,11 +252,20 @@ class FaceRecognitionService:
             Annotated image as bytes
         """
         import cv2
-        import numpy as np
         
         img = cv2.imread(image_path)
         if img is None:
             raise ValueError("Could not read image")
+
+        img_h, img_w = img.shape[:2]
+        base_font_scale = max(0.68, min(1.15, min(img_h, img_w) / 700.0))
+        min_font_scale = 0.50
+        label_pad_x = 14
+        label_pad_y = 10
+        label_bg_color = (210, 245, 210)       # light green background (BGR)
+        label_border_color = (130, 105, 65)    # muted border that fits the palette
+        label_text_color = (72, 45, 18)        # dark, easy-to-read text color
+        font = cv2.FONT_HERSHEY_SIMPLEX
         
         for face in faces:
             bbox = face['bbox']
@@ -275,28 +284,60 @@ class FaceRecognitionService:
                 logging.warning(f"Could not parse bbox {bbox}: {e}, skipping")
                 continue
                 
-            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)  # Green for recognized, red for unknown
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+            box_color = (48, 190, 60) if name != "Unknown" else (80, 80, 210)
+            cv2.rectangle(img, (x1, y1), (x2, y2), box_color, 4)
             
             # Prepare text
             if name != "Unknown":
-                text = f"{name} ({confidence*100:.1f}%)"
+                text = f"{name} | {confidence*100:.1f}%"
             else:
                 text = "Unknown"
             
             # Calculate text size and background
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.6
-            thickness = 2
-            (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+            font_scale = base_font_scale
+            text_thickness = 2
+            (text_width, text_height), baseline = cv2.getTextSize(
+                text, font, font_scale, text_thickness
+            )
+
+            # Shrink label text until it fits within bbox width (small-image friendly).
+            max_text_width = max(64, (x2 - x1) - (label_pad_x * 2 + 6))
+            while text_width > max_text_width and font_scale > min_font_scale:
+                font_scale = max(min_font_scale, font_scale - 0.04)
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    text, font, font_scale, text_thickness
+                )
             
-            # Draw text background
-            text_y = y1 - 10 if y1 - 10 > text_height else y1 + text_height + 10
-            cv2.rectangle(img, (x1, text_y - text_height - baseline), 
-                         (x1 + text_width, text_y + baseline), color, -1)
+            # Draw print-friendly label: opaque light background + dark text.
+            text_x = max(label_pad_x, min(x1 + 2, img_w - text_width - label_pad_x - 1))
+            candidate_baseline = y1 - 8
+            min_baseline = text_height + baseline + label_pad_y + 1
+            if candidate_baseline < min_baseline:
+                candidate_baseline = y1 + text_height + baseline + label_pad_y + 2
+            text_baseline = min(
+                img_h - baseline - label_pad_y - 1,
+                max(min_baseline, candidate_baseline),
+            )
+            bg_x1 = max(0, text_x - label_pad_x)
+            bg_y1 = max(0, text_baseline - text_height - baseline - label_pad_y)
+            bg_x2 = min(img_w - 1, text_x + text_width + label_pad_x)
+            bg_y2 = min(img_h - 1, text_baseline + baseline + label_pad_y)
+            cv2.rectangle(img, (bg_x1, bg_y1), (bg_x2, bg_y2), label_bg_color, -1)
+            cv2.rectangle(img, (bg_x1, bg_y1), (bg_x2, bg_y2), label_border_color, 2)
+            accent_x2 = min(bg_x2, bg_x1 + 5)
+            cv2.rectangle(img, (bg_x1, bg_y1), (accent_x2, bg_y2), box_color, -1)
             
             # Draw text
-            cv2.putText(img, text, (x1, text_y), font, font_scale, (255, 255, 255), thickness)
+            cv2.putText(
+                img,
+                text,
+                (text_x, max(text_height, min(text_baseline, img_h - baseline - 1))),
+                font,
+                font_scale,
+                label_text_color,
+                text_thickness,
+                cv2.LINE_AA,
+            )
         
         # Encode image to bytes
         _, buffer = cv2.imencode('.jpg', img)

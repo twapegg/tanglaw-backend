@@ -6,12 +6,6 @@ import torch
 from config import (
     DEFAULT_GAMMA, DEFAULT_CURVE, DEFAULT_NOISE_AMOUNT, DEFAULT_BRIGHT_FACTOR,
     CLAHE_CLIP_LIMIT, CLAHE_TILE_GRID_SIZE, ENHANCEMENT_GAMMA, DENOISE_STRENGTH,
-    ENHANCEMENT_LUMA_LOW, ENHANCEMENT_LUMA_VERY_LOW,
-    ENHANCEMENT_CLAHE_CLIP_LIMIT_LOW, ENHANCEMENT_CLAHE_CLIP_LIMIT_VERY_LOW,
-    ENHANCEMENT_GAMMA_LOW, ENHANCEMENT_GAMMA_VERY_LOW,
-    ENHANCEMENT_DENOISE_LOW, ENHANCEMENT_DENOISE_VERY_LOW,
-    ENHANCEMENT_GAIN_LOW, ENHANCEMENT_GAIN_VERY_LOW,
-    ENHANCEMENT_BIAS_LOW, ENHANCEMENT_BIAS_VERY_LOW,
     ENHANCEMENT_DEEP_POSTBOOST_LUMA, ENHANCEMENT_DEEP_POSTBOOST_GAMMA,
     ENHANCEMENT_DEEP_POSTBOOST_GAIN, ENHANCEMENT_DEEP_POSTBOOST_BIAS
 )
@@ -46,29 +40,6 @@ def _mean_luminance_bgr(img):
     return float(l.mean())
 
 
-def _select_enhancement_params(l_mean, base_gamma, base_denoise):
-    clahe_clip = CLAHE_CLIP_LIMIT
-    gamma = base_gamma
-    denoise = base_denoise
-    gain = 1.0
-    bias = 0
-
-    if l_mean <= ENHANCEMENT_LUMA_VERY_LOW:
-        clahe_clip = ENHANCEMENT_CLAHE_CLIP_LIMIT_VERY_LOW
-        gamma = max(base_gamma, ENHANCEMENT_GAMMA_VERY_LOW)
-        denoise = max(base_denoise, ENHANCEMENT_DENOISE_VERY_LOW)
-        gain = ENHANCEMENT_GAIN_VERY_LOW
-        bias = ENHANCEMENT_BIAS_VERY_LOW
-    elif l_mean <= ENHANCEMENT_LUMA_LOW:
-        clahe_clip = ENHANCEMENT_CLAHE_CLIP_LIMIT_LOW
-        gamma = max(base_gamma, ENHANCEMENT_GAMMA_LOW)
-        denoise = max(base_denoise, ENHANCEMENT_DENOISE_LOW)
-        gain = ENHANCEMENT_GAIN_LOW
-        bias = ENHANCEMENT_BIAS_LOW
-
-    return clahe_clip, gamma, denoise, gain, bias
-
-
 def _apply_gamma_and_gain(img, gamma, gain, bias):
     gamma_inv = 1.0 / gamma
     table = np.array([(i / 255.0) ** gamma_inv * 255 for i in range(256)]).astype("uint8")
@@ -96,21 +67,13 @@ def enhance_classical(img, gamma=ENHANCEMENT_GAMMA, denoise_strength=DENOISE_STR
     """
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
-    l_mean = float(l.mean())
-
-    clahe_clip, gamma, denoise_strength, gain, bias = _select_enhancement_params(
-        l_mean,
-        gamma,
-        denoise_strength,
-    )
-
-    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=CLAHE_TILE_GRID_SIZE)
+    clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_TILE_GRID_SIZE)
     l_clahe = clahe.apply(l)
 
     lab_clahe = cv2.merge((l_clahe, a, b))
     enhanced = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
 
-    enhanced_gamma = _apply_gamma_and_gain(enhanced, gamma, gain, bias)
+    enhanced_gamma = _apply_gamma_and_gain(enhanced, gamma, gain=1.0, bias=0)
 
     denoised = cv2.fastNlMeansDenoisingColored(
         enhanced_gamma,
@@ -164,4 +127,3 @@ def enhance_deep(img):
     except Exception as e:
         logging.error(f"Deep enhancement failed: {e}")
         return None
-
